@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const session = require('express-session');
 const FileStore = require('session-file-store')(session);
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,6 +15,9 @@ const PORT = process.env.PORT || 3000;
 // Hardcoded credentials
 const ADMIN_EMAIL = 'musaqazi54@gmail.com';
 const ADMIN_PASSWORD = 'musa123456';
+
+// JWT Secret (use environment variable in production)
+const JWT_SECRET = process.env.JWT_SECRET || 'musa-portfolio-jwt-secret-2025';
 
 // Create sessions directory if it doesn't exist
 const sessionsDir = path.join(__dirname, 'sessions');
@@ -171,48 +175,59 @@ const db = new sqlite3.Database('./portfolio.db', (err) => {
     }
 });
 
-// Authentication middleware
+// Authentication middleware - Check JWT token
 function requireAuth(req, res, next) {
+    // First check JWT token (new method)
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            req.user = decoded;
+            return next();
+        } catch (err) {
+            console.error('JWT verification failed:', err.message);
+        }
+    }
+
+    // Fallback to session (backwards compatibility)
     if (req.session && req.session.authenticated) {
         return next();
-    } else {
-        return res.status(401).json({ error: 'Unauthorized. Please login first.' });
     }
+
+    return res.status(401).json({ error: 'Unauthorized. Please login first.' });
 }
 
-// Login route
+// Login route - Generate JWT token
 app.post('/api/login', (req, res) => {
     const { email, password } = req.body;
-    
+
     console.log('Login attempt:', email);
-    
+
     if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+        // Generate JWT token
+        const token = jwt.sign(
+            { email: email, authenticated: true },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        // Also set session for backwards compatibility
         req.session.authenticated = true;
         req.session.email = email;
-        
-        // Save session explicitly
-        req.session.save((err) => {
-            if (err) {
-                console.error('Session save error:', err);
-                return res.status(500).json({ 
-                    success: false, 
-                    error: 'Session save failed' 
-                });
-            }
-            
-            console.log('Login successful, session:', req.session);
-            res.json({ 
-                success: true, 
-                message: 'Login successful',
-                email: email,
-                sessionId: req.sessionID
-            });
+
+        console.log('Login successful for:', email);
+        res.json({
+            success: true,
+            message: 'Login successful',
+            email: email,
+            token: token
         });
     } else {
         console.log('Login failed: Invalid credentials');
-        res.status(401).json({ 
-            success: false, 
-            error: 'Invalid email or password' 
+        res.status(401).json({
+            success: false,
+            error: 'Invalid email or password'
         });
     }
 });
@@ -228,15 +243,32 @@ app.post('/api/logout', (req, res) => {
     });
 });
 
-// Check auth status route
+// Check auth status route - Verify JWT token
 app.get('/api/auth/status', (req, res) => {
+    // First check JWT token (new method)
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            console.log('Auth check - JWT valid for:', decoded.email);
+            return res.json({
+                authenticated: true,
+                email: decoded.email
+            });
+        } catch (err) {
+            console.error('JWT verification failed:', err.message);
+        }
+    }
+
+    // Fallback to session check (backwards compatibility)
     console.log('Auth check - Session:', req.session);
     console.log('Session ID:', req.sessionID);
-    
+
     if (req.session && req.session.authenticated) {
-        res.json({ 
-            authenticated: true, 
-            email: req.session.email 
+        res.json({
+            authenticated: true,
+            email: req.session.email
         });
     } else {
         res.json({ authenticated: false });
