@@ -42,12 +42,15 @@ const corsOptions = {
     origin: function (origin, callback) {
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
-        
-        if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else if (process.env.NODE_ENV === 'development') {
+            console.log('Allowing origin in development:', origin);
             callback(null, true);
         } else {
             console.log('Blocked by CORS:', origin);
-            callback(null, true); // Still allow in development for debugging
+            callback(new Error('Not allowed by CORS'));
         }
     },
     credentials: true,
@@ -79,7 +82,8 @@ app.use(session({
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production', // true in production with HTTPS
         sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' required for cross-origin
-        path: '/'
+        path: '/',
+        partitioned: process.env.NODE_ENV === 'production' // Required for Chrome cross-site cookies
     },
     rolling: true // Reset cookie expiry on every request
 }));
