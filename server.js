@@ -28,7 +28,9 @@ const allowedOrigins = [
     'http://127.0.0.1:8080',
     'http://127.0.0.1:3000',
     'http://localhost:5500', // Live Server
-    'http://127.0.0.1:5500'
+    'http://127.0.0.1:5500',
+    'https://fantastic-praline-fe806a.netlify.app', // Old production frontend
+    'https://precious-longma-053611.netlify.app' // New production frontend
 ];
 
 // Add production frontend URL from environment variable
@@ -75,8 +77,8 @@ app.use(session({
     cookie: {
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         httpOnly: true,
-        secure: false, // Set to true only in production with HTTPS
-        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production', // true in production with HTTPS
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' required for cross-origin
         path: '/'
     },
     rolling: true // Reset cookie expiry on every request
