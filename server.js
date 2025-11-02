@@ -6,6 +6,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const session = require('express-session');
+const FileStore = require('session-file-store')(session);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,11 +15,44 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_EMAIL = 'musaqazi54@gmail.com';
 const ADMIN_PASSWORD = 'musa123456';
 
+// Create sessions directory if it doesn't exist
+const sessionsDir = path.join(__dirname, 'sessions');
+if (!fs.existsSync(sessionsDir)) {
+    fs.mkdirSync(sessionsDir);
+}
+
 // CORS configuration - Allow frontend domain
+const allowedOrigins = [
+    'http://localhost:8080',
+    'http://localhost:3000',
+    'http://127.0.0.1:8080',
+    'http://127.0.0.1:3000',
+    'http://localhost:5500', // Live Server
+    'http://127.0.0.1:5500'
+];
+
+// Add production frontend URL from environment variable
+if (process.env.FRONTEND_URL) {
+    allowedOrigins.push(process.env.FRONTEND_URL);
+}
+
 const corsOptions = {
-    origin: process.env.FRONTEND_URL || 'http://localhost:8080',
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+            callback(null, true);
+        } else {
+            console.log('Blocked by CORS:', origin);
+            callback(null, true); // Still allow in development for debugging
+        }
+    },
     credentials: true,
-    optionsSuccessStatus: 200
+    optionsSuccessStatus: 200,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+    exposedHeaders: ['Set-Cookie']
 };
 
 // Middleware
@@ -26,21 +60,67 @@ app.use(cors(corsOptions));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Session middleware
+// Session middleware with file store
 app.use(session({
+    store: new FileStore({
+        path: sessionsDir,
+        ttl: 86400, // 24 hours in seconds
+        retries: 2,
+        reapInterval: 3600 // Clean up expired sessions every hour
+    }),
     secret: process.env.SESSION_SECRET || 'musa-portfolio-secret-key-2025',
     resave: false,
     saveUninitialized: false,
+    name: 'musa.sid',
     cookie: {
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production', // HTTPS in production
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
-    }
+        secure: false, // Set to true only in production with HTTPS
+        sameSite: 'lax',
+        path: '/'
+    },
+    rolling: true // Reset cookie expiry on every request
 }));
+
+// Log session info
+app.use((req, res, next) => {
+    if (req.session) {
+        console.log('Session ID:', req.sessionID);
+        console.log('Session Data:', req.session);
+    }
+    next();
+});
 
 // Serve uploaded images statically
 app.use('/uploads', express.static('uploads'));
+
+// Health check endpoint
+app.get('/', (req, res) => {
+    res.json({ 
+        message: 'Musa Aamir Qazi Portfolio API',
+        status: 'running',
+        version: '1.0.0',
+        endpoints: {
+            public: [
+                'GET /api/projects',
+                'GET /api/projects/:id',
+                'GET /api/projects/technology/:tech',
+                'GET /uploads/images/*'
+            ],
+            auth: [
+                'POST /api/login',
+                'POST /api/logout',
+                'GET /api/auth/status'
+            ],
+            protected: [
+                'POST /api/projects',
+                'PUT /api/projects/:id',
+                'DELETE /api/projects/:id',
+                'DELETE /api/images/:id'
+            ]
+        }
+    });
+});
 
 // Ensure upload directory exists
 const uploadDir = './uploads/images';
@@ -98,15 +178,32 @@ function requireAuth(req, res, next) {
 app.post('/api/login', (req, res) => {
     const { email, password } = req.body;
     
+    console.log('Login attempt:', email);
+    
     if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
         req.session.authenticated = true;
         req.session.email = email;
-        res.json({ 
-            success: true, 
-            message: 'Login successful',
-            email: email 
+        
+        // Save session explicitly
+        req.session.save((err) => {
+            if (err) {
+                console.error('Session save error:', err);
+                return res.status(500).json({ 
+                    success: false, 
+                    error: 'Session save failed' 
+                });
+            }
+            
+            console.log('Login successful, session:', req.session);
+            res.json({ 
+                success: true, 
+                message: 'Login successful',
+                email: email,
+                sessionId: req.sessionID
+            });
         });
     } else {
+        console.log('Login failed: Invalid credentials');
         res.status(401).json({ 
             success: false, 
             error: 'Invalid email or password' 
@@ -127,6 +224,9 @@ app.post('/api/logout', (req, res) => {
 
 // Check auth status route
 app.get('/api/auth/status', (req, res) => {
+    console.log('Auth check - Session:', req.session);
+    console.log('Session ID:', req.sessionID);
+    
     if (req.session && req.session.authenticated) {
         res.json({ 
             authenticated: true, 

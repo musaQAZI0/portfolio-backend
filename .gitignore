@@ -8,15 +8,18 @@ yarn-error.log*
 *.db
 *.db-journal
 
-# Uploaded files
-public/uploads/images/*
-!public/uploads/images/.gitkeep
+# Sessions
+sessions/
 
-# Environment variables
+# Uploaded files
+uploads/images/*
+!uploads/images/.gitkeep
+
+# Environment
 .env
 .env.local
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
@@ -25,18 +28,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
-*~
 
 # Logs
 logs/
 *.log
-
-# Runtime data
-pids/
-*.pid
-*.seed
-*.pid.lock
-
-# Build files
-dist/
-build/
