@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const sqlite3 = require('sqlite3').verbose();
+const mongoose = require('mongoose');
 const path = require('path');
 const fs = require('fs');
 const session = require('express-session');
@@ -18,6 +18,9 @@ const ADMIN_PASSWORD = 'musa123456';
 
 // JWT Secret (use environment variable in production)
 const JWT_SECRET = process.env.JWT_SECRET || 'musa-portfolio-jwt-secret-2025';
+
+// MongoDB Connection URI
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://musaqazi54:lLpjH51UiwLbvPux@cluster0.im1x1fy.mongodb.net/?appName=Cluster0';
 
 // Create sessions directory if it doesn't exist
 const sessionsDir = path.join(__dirname, 'sessions');
@@ -165,15 +168,37 @@ const upload = multer({
     }
 });
 
-// Initialize SQLite database
-const db = new sqlite3.Database('./portfolio.db', (err) => {
-    if (err) {
-        console.error('Error opening database:', err.message);
-    } else {
-        console.log('Connected to SQLite database');
-        initDatabase();
-    }
+// Connect to MongoDB
+mongoose.connect(MONGODB_URI)
+    .then(() => {
+        console.log('✅ Connected to MongoDB successfully!');
+        console.log('Database:', mongoose.connection.name);
+    })
+    .catch((err) => {
+        console.error('❌ MongoDB connection error:', err);
+        process.exit(1);
+    });
+
+// MongoDB Schemas
+const projectImageSchema = new mongoose.Schema({
+    image_path: { type: String, required: true },
+    is_primary: { type: Boolean, default: false }
 });
+
+const projectSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+    technology: { type: String, required: true },
+    features: String,
+    video_link: String,
+    github_link: String,
+    playstore_link: String,
+    appstore_link: String,
+    images: [projectImageSchema],
+    created_at: { type: Date, default: Date.now }
+});
+
+const Project = mongoose.model('Project', projectSchema);
 
 // Authentication middleware - Check JWT token
 function requireAuth(req, res, next) {
@@ -275,297 +300,201 @@ app.get('/api/auth/status', (req, res) => {
     }
 });
 
-// Create tables
-function initDatabase() {
-    db.run(`CREATE TABLE IF NOT EXISTS projects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        description TEXT NOT NULL,
-        technology TEXT NOT NULL,
-        features TEXT,
-        video_link TEXT,
-        github_link TEXT,
-        playstore_link TEXT,
-        appstore_link TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`, (err) => {
-        if (err) console.error('Error creating projects table:', err);
-    });
-
-    db.run(`CREATE TABLE IF NOT EXISTS project_images (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id INTEGER NOT NULL,
-        image_path TEXT NOT NULL,
-        is_primary BOOLEAN DEFAULT 0,
-        FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
-    )`, (err) => {
-        if (err) console.error('Error creating project_images table:', err);
-    });
-}
+// MongoDB collections are automatically created when first document is inserted
 
 // API Routes
 
 // Get all projects
-app.get('/api/projects', (req, res) => {
-    const technology = req.query.technology;
-    let query = 'SELECT * FROM projects';
-    let params = [];
+app.get('/api/projects', async (req, res) => {
+    try {
+        const technology = req.query.technology;
+        const filter = technology ? { technology } : {};
 
-    if (technology) {
-        query += ' WHERE technology = ?';
-        params.push(technology);
+        const projects = await Project.find(filter).sort({ created_at: -1 });
+        res.json(projects);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-
-    query += ' ORDER BY created_at DESC';
-
-    db.all(query, params, (err, projects) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
-
-        // Get images for each project
-        const projectPromises = projects.map(project => {
-            return new Promise((resolve, reject) => {
-                db.all('SELECT * FROM project_images WHERE project_id = ?', [project.id], (err, images) => {
-                    if (err) reject(err);
-                    project.images = images;
-                    resolve(project);
-                });
-            });
-        });
-
-        Promise.all(projectPromises)
-            .then(projectsWithImages => {
-                res.json(projectsWithImages);
-            })
-            .catch(err => {
-                res.status(500).json({ error: err.message });
-            });
-    });
 });
 
 // Get single project
-app.get('/api/projects/:id', (req, res) => {
-    db.get('SELECT * FROM projects WHERE id = ?', [req.params.id], (err, project) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
+app.get('/api/projects/:id', async (req, res) => {
+    try {
+        const project = await Project.findById(req.params.id);
         if (!project) {
-            res.status(404).json({ error: 'Project not found' });
-            return;
+            return res.status(404).json({ error: 'Project not found' });
         }
-
-        // Get images
-        db.all('SELECT * FROM project_images WHERE project_id = ?', [project.id], (err, images) => {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
-            project.images = images;
-            res.json(project);
-        });
-    });
+        res.json(project);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Create new project with images
-app.post('/api/projects', requireAuth, upload.array('images', 10), (req, res) => {
-    const { title, description, technology, features, video_link, github_link, playstore_link, appstore_link } = req.body;
+app.post('/api/projects', requireAuth, upload.array('images', 10), async (req, res) => {
+    try {
+        const { title, description, technology, features, video_link, github_link, playstore_link, appstore_link } = req.body;
 
-    if (!title || !description || !technology) {
-        return res.status(400).json({ error: 'Title, description, and technology are required' });
+        if (!title || !description || !technology) {
+            return res.status(400).json({ error: 'Title, description, and technology are required' });
+        }
+
+        // Prepare images array
+        const images = req.files ? req.files.map((file, index) => ({
+            image_path: '/uploads/images/' + file.filename,
+            is_primary: index === 0
+        })) : [];
+
+        // Create project
+        const project = new Project({
+            title,
+            description,
+            technology,
+            features,
+            video_link,
+            github_link,
+            playstore_link,
+            appstore_link,
+            images
+        });
+
+        await project.save();
+
+        res.json({
+            success: true,
+            id: project._id,
+            message: 'Project created successfully'
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-
-    const sql = `INSERT INTO projects (title, description, technology, features, video_link, github_link, playstore_link, appstore_link) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-
-    db.run(sql, [title, description, technology, features, video_link, github_link, playstore_link, appstore_link], function(err) {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
-
-        const projectId = this.lastID;
-
-        // Insert images
-        if (req.files && req.files.length > 0) {
-            const imagePromises = req.files.map((file, index) => {
-                return new Promise((resolve, reject) => {
-                    const imagePath = '/uploads/images/' + file.filename;
-                    const isPrimary = index === 0 ? 1 : 0;
-                    db.run('INSERT INTO project_images (project_id, image_path, is_primary) VALUES (?, ?, ?)',
-                        [projectId, imagePath, isPrimary],
-                        (err) => {
-                            if (err) reject(err);
-                            else resolve();
-                        }
-                    );
-                });
-            });
-
-            Promise.all(imagePromises)
-                .then(() => {
-                    res.json({
-                        success: true,
-                        id: projectId,
-                        message: 'Project created successfully'
-                    });
-                })
-                .catch(err => {
-                    res.status(500).json({ error: err.message });
-                });
-        } else {
-            res.json({
-                success: true,
-                id: projectId,
-                message: 'Project created successfully'
-            });
-        }
-    });
 });
 
 // Update project
-app.put('/api/projects/:id', requireAuth, upload.array('images', 10), (req, res) => {
-    const { title, description, technology, features, video_link, github_link, playstore_link, appstore_link } = req.body;
-    const projectId = req.params.id;
+app.put('/api/projects/:id', requireAuth, upload.array('images', 10), async (req, res) => {
+    try {
+        const { title, description, technology, features, video_link, github_link, playstore_link, appstore_link } = req.body;
 
-    const sql = `UPDATE projects 
-                 SET title = ?, description = ?, technology = ?, features = ?, 
-                     video_link = ?, github_link = ?, playstore_link = ?, appstore_link = ?
-                 WHERE id = ?`;
-
-    db.run(sql, [title, description, technology, features, video_link, github_link, playstore_link, appstore_link, projectId], function(err) {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
+        const updateData = {
+            title,
+            description,
+            technology,
+            features,
+            video_link,
+            github_link,
+            playstore_link,
+            appstore_link
+        };
 
         // Add new images if provided
         if (req.files && req.files.length > 0) {
-            const imagePromises = req.files.map((file) => {
-                return new Promise((resolve, reject) => {
-                    const imagePath = '/uploads/images/' + file.filename;
-                    db.run('INSERT INTO project_images (project_id, image_path, is_primary) VALUES (?, ?, 0)',
-                        [projectId, imagePath],
-                        (err) => {
-                            if (err) reject(err);
-                            else resolve();
-                        }
-                    );
-                });
-            });
+            const newImages = req.files.map(file => ({
+                image_path: '/uploads/images/' + file.filename,
+                is_primary: false
+            }));
 
-            Promise.all(imagePromises)
-                .then(() => {
-                    res.json({
-                        success: true,
-                        message: 'Project updated successfully'
-                    });
-                })
-                .catch(err => {
-                    res.status(500).json({ error: err.message });
-                });
-        } else {
-            res.json({
-                success: true,
-                message: 'Project updated successfully'
-            });
+            // Get existing images and append new ones
+            const project = await Project.findById(req.params.id);
+            if (project) {
+                updateData.images = [...project.images, ...newImages];
+            }
         }
-    });
+
+        const updatedProject = await Project.findByIdAndUpdate(
+            req.params.id,
+            updateData,
+            { new: true }
+        );
+
+        if (!updatedProject) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        res.json({
+            success: true,
+            message: 'Project updated successfully'
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Delete project
-app.delete('/api/projects/:id', requireAuth, (req, res) => {
-    const projectId = req.params.id;
-
-    // Get images to delete files
-    db.all('SELECT * FROM project_images WHERE project_id = ?', [projectId], (err, images) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
+app.delete('/api/projects/:id', requireAuth, async (req, res) => {
+    try {
+        const project = await Project.findById(req.params.id);
+        if (!project) {
+            return res.status(404).json({ error: 'Project not found' });
         }
 
         // Delete image files
-        images.forEach(image => {
-            const filePath = path.join(__dirname, image.image_path);
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-            }
-        });
+        if (project.images && project.images.length > 0) {
+            project.images.forEach(image => {
+                const filePath = path.join(__dirname, image.image_path);
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                }
+            });
+        }
 
         // Delete from database
-        db.run('DELETE FROM projects WHERE id = ?', [projectId], function(err) {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
-            res.json({
-                success: true,
-                message: 'Project deleted successfully'
-            });
+        await Project.findByIdAndDelete(req.params.id);
+
+        res.json({
+            success: true,
+            message: 'Project deleted successfully'
         });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Delete specific image
-app.delete('/api/images/:id', requireAuth, (req, res) => {
-    const imageId = req.params.id;
+app.delete('/api/images/:id', requireAuth, async (req, res) => {
+    try {
+        const imageId = req.params.id;
 
-    db.get('SELECT * FROM project_images WHERE id = ?', [imageId], (err, image) => {
-        if (err || !image) {
-            res.status(404).json({ error: 'Image not found' });
-            return;
+        // Find project containing this image
+        const project = await Project.findOne({ 'images._id': imageId });
+
+        if (!project) {
+            return res.status(404).json({ error: 'Image not found' });
         }
 
-        // Delete file
+        // Find the image in the project
+        const image = project.images.id(imageId);
+        if (!image) {
+            return res.status(404).json({ error: 'Image not found' });
+        }
+
+        // Delete physical file
         const filePath = path.join(__dirname, image.image_path);
         if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
         }
 
-        // Delete from database
-        db.run('DELETE FROM project_images WHERE id = ?', [imageId], function(err) {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
-            res.json({
-                success: true,
-                message: 'Image deleted successfully'
-            });
+        // Remove image from array
+        image.remove();
+        await project.save();
+
+        res.json({
+            success: true,
+            message: 'Image deleted successfully'
         });
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Get projects by technology
-app.get('/api/projects/technology/:tech', (req, res) => {
-    const technology = req.params.tech;
-    
-    db.all('SELECT * FROM projects WHERE technology = ? ORDER BY created_at DESC', [technology], (err, projects) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
-
-        const projectPromises = projects.map(project => {
-            return new Promise((resolve, reject) => {
-                db.all('SELECT * FROM project_images WHERE project_id = ?', [project.id], (err, images) => {
-                    if (err) reject(err);
-                    project.images = images;
-                    resolve(project);
-                });
-            });
-        });
-
-        Promise.all(projectPromises)
-            .then(projectsWithImages => {
-                res.json(projectsWithImages);
-            })
-            .catch(err => {
-                res.status(500).json({ error: err.message });
-            });
-    });
+app.get('/api/projects/technology/:tech', async (req, res) => {
+    try {
+        const technology = req.params.tech;
+        const projects = await Project.find({ technology }).sort({ created_at: -1 });
+        res.json(projects);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Health check endpoint
@@ -584,12 +513,13 @@ app.listen(PORT, () => {
 });
 
 // Graceful shutdown
-process.on('SIGINT', () => {
-    db.close((err) => {
-        if (err) {
-            console.error('Error closing database:', err.message);
-        }
-        console.log('Database connection closed');
+process.on('SIGINT', async () => {
+    try {
+        await mongoose.connection.close();
+        console.log('MongoDB connection closed');
         process.exit(0);
-    });
+    } catch (err) {
+        console.error('Error closing MongoDB:', err.message);
+        process.exit(1);
+    }
 });
